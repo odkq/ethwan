@@ -1,0 +1,265 @@
+#!/bin/bash
+#
+# Tool around the most common operations needed with docker-compose
+# Run without parameters to see a brief help reference
+#
+function usage {
+cat <<End-of-help
+
+  ethwan. EthWan launcher
+  Options:
+    -d/--debug      -- Gather verbose output from services/tests
+    -f/--foreground -- Run in foreground (stop with ^C)
+    -e/--eth=<dev>  -- Ethernet device used for ethrouter
+  Commands:"
+    start           -- Build and launch Ethwan
+    stop            -- Stop service
+    delete          -- Delete all containers and images
+    logs            -- Retrieve current logs. With -f retrieve continously
+
+    Example:
+    ./ethwan -f -e=eth0 start
+    ./ethwan stop
+
+End-of-help
+}
+
+MINDV=17
+MINDSV=3
+MINDCV=1
+MINDCSV=13
+
+function docker_versions {
+cat <<End-of-versions
+
+  Versions of docker and docker-compose able to run EthWan:
+
+  - Docker engine $MINDV.$MINDSV or newer
+
+      For installation follow the instructions at
+      https://docs.docker.com/install/ and follow the steps for
+      your distribution.
+
+      For older systems, a binary release is available
+
+  - docker-compose $MINDCV.$MINDCSV or newer
+
+     Follow instructions at https://docs.docker.com/compose/install/
+
+     If the provided binary does not work (older system) you can install
+     directly latest version using pip (pip install docker-compose)
+
+End-of-versions
+}
+
+
+function check_docker_versions {
+    docker -v >/dev/null 2>&1
+    if [ ! $? -eq 0 ]; then
+        echo -en "\nERROR :"
+        echo "Docker engine does not seem to be installed (or not in PATH)"
+        docker_versions
+        exit 1
+    fi
+    docker-compose -v >/dev/null 2>&1
+    if [ ! $? -eq 0 ]; then
+        echo -en "\nERROR :"
+        echo "docker-compose does not seem to be installed (or not in PATH)"
+        docker_versions
+        exit 1
+    fi
+    DV=$(docker --version | cut -d' ' -f 3 | cut -d'.' -f 1 | sed 's/^0*//')
+    DSV=$(docker --version | cut -d' ' -f 3 | cut -d'.' -f 2 | sed 's/^0*//')
+    DCV=$(docker-compose -v | cut -d' ' -f 3 | cut -d'.' -f 1 | sed 's/^0*//')
+    DCSV=$(docker-compose -v | cut -d' ' -f 3 | cut -d'.' -f 2 | sed 's/^0*//')
+    if [ $DV -lt $MINDV ]; then
+        echo -en "\nERROR :"
+        echo "You have docker engine $DV.$DSV which is too old for ethwan"
+        docker_versions
+        exit 1
+    fi
+    if [[ $DV -eq $MINDV && $DSV -lt $MINDSV ]]; then
+        echo -en "\nERROR :"
+        echo "You have docker engine $DV.$DSV which is too old for ethwan"
+        docker_versions
+        exit 1
+    fi
+    if [ $DCV -lt $MINDCV ]; then
+        echo -en "\nERROR :"
+        echo "You have docker-compose $DCV.$DCSV which is too old for ethwan"
+        docker_versions
+        exit 1
+    fi
+    if [[ $DCV -eq $MINDCV && $DCSV -lt $MINDCSV ]]; then
+        echo -en "\nERROR :"
+        echo "You have docker engine $DCV.$DCSV which is too old for ethwan"
+        docker_versions
+        exit 1
+    fi
+
+}
+
+function dcomp {
+    docker-compose $@
+    ret=$?
+    return $ret
+}
+
+function check_service {
+    image=$(dcomp ps -q $1)
+    if [ "$image" = "" ]; then
+        return 0
+    fi
+
+	if [ -z `docker ps -q --no-trunc | grep $image` ]; then
+      return 0
+	else
+      return 1
+	fi
+    return 0
+}
+
+function check_services {
+    if [ ! -d staging/ ]; then
+        return 0
+    fi
+    for service in $@; do
+        check_service $service
+        if [ $? -eq 0 ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+function download_dep {
+    BASEURL="https://raw.githubusercontent.com/odkq/"
+    BASEURL=$BASEURL"tornado-protobuf-pyzmq-websocket-example/master/"
+
+    if [ ! -f $1 ]; then
+        wget $BASEURL"$1"
+        if [ ! $? -eq 0 ]; then
+            echo "Error downloading $1"
+            exit 1
+        fi
+    fi
+}
+
+for i in "$@"; do
+    case $i in
+        -e=*|--eth=*)
+        ETHERNET="${i#*=}"
+        shift # past argument=value
+        ;;
+        -d|--debug)
+        DEBUG=YES
+        shift # past argument with no value
+        ;;
+        -f|--foreground)
+        FOREGROUND=YES
+        shift
+        ;;
+        -b|--build)
+        BUILD=YES
+        shift
+        ;;
+        *)
+            if [ "${i:0:1}" = "-" ]; then
+                echo ""
+                echo "Unknown option $i"
+                usage
+                exit 1
+            fi
+        ;;
+    esac
+done
+
+if [ "${REMOTE}" == "YES" ]; then
+    if [ ! -f staging/board_address ]; then
+        echo "Specify remote board adddress/hostname with -r=address once"
+        exit 1
+    else
+        REMOTEHOST=$(cat staging/board_address)
+        echo "Using REMOTEHOST $REMOTEHOST"
+        exit 0
+    fi
+fi
+
+case $1 in
+    start)
+        check_docker_versions
+        check_services "ethrouter"
+        if [ $? -eq 1 ]; then
+            echo "Already launched."
+            exit 0
+        fi
+
+        download_dep bootstrap-combined.no-icons.min.css
+        download_dep jquery.min.js
+
+        if [ ! -f docker-compose.yml ]; then
+            if [ "${ETHERNET}" == "" ]; then
+                echo -en "\nERROR : "
+                echo "No ethernet WAN device specified."
+                echo "On first build, or after a clean command, please supply"
+                echo "the name of the ethernet interface to be used as WAN for the CPE"
+                echo ""
+                echo "exaple: ./ethwan --ethernet=eth0 start"
+                echo ""
+                exit 1
+            fi
+            cp docker-compose.in.yml docker-compose.yml
+            sed -i -e "s/WAN_DEVICE/${ETHERNET}/g" docker-compose.yml
+        fi
+        if [ "${BUILD}" == "YES" ]; then
+            EXTRA="--build"
+        fi
+        if [ "${FOREGROUND}" == "YES" ]; then
+            dcomp up $EXTRA
+        else
+            dcomp up -d $EXTRA
+        fi
+    ;;
+    stop)
+        dcomp down
+    ;;
+    delete)
+        dcomp down --rmi all --volumes --remove-orphans
+        dcomp rm -f
+    ;;
+    clean)
+        check_services "ethrouter"
+        if [ $? -eq 1 ]; then
+            echo "Stop system before cleaning local files."
+            exit 0
+        fi
+        rm -fR docker-compose.yml bootstrap-combined.no-icons.min.css
+        rm -fR jquery.min.js
+    ;;
+    log)
+        check_services "ethrouter"
+        if [ $? -eq 0 ]; then
+            echo "System is not started. No logs."
+            exit 0
+        fi
+        if [ "${FOREGROUND}" == "YES" ]; then
+            dcomp logs -f
+        else
+            dcomp logs
+        fi
+    ;;
+    dcomp)
+        shift   # Go past the dcomp argument
+        dcomp $@
+    ;;
+    shell)
+        dcomp exec ethrouter sh
+    ;;
+    newshell)
+        dcomp run $2 sh
+    ;;
+    *)
+        usage
+        exit 1
+    ;;
+esac

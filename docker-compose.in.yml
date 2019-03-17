@@ -1,0 +1,28 @@
+version: '3'
+
+services:
+  ethrouter:
+    image: 127.0.0.1:5000/ethrouter
+    build:
+      context: .
+      dockerfile: ./Dockerfile
+    cap_add:
+      - NET_ADMIN
+    ports:
+        - "8099:8099"  # web monitor
+    networks:
+      - defnetwork
+      - ethwan_network
+
+networks:
+  defnetwork:
+    ipam:
+      config:
+      - subnet: 192.168.231.0/24
+  ethwan_network:
+    driver: macvlan
+    driver_opts:
+      parent: WAN_DEVICE
+    ipam:
+      config:
+      - subnet: 192.168.232.0/24
