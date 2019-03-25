@@ -4,7 +4,7 @@ Simple setup to make a linux box a routing device
 
 ## Requirements
 
-- Docker Enginer 17.3+
+- Docker Engine 17.3+
 - Docker Compose 1.13+
 
 ## Usage
